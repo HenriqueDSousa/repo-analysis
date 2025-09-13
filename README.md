@@ -10,6 +10,8 @@ A small CLI tool to detect god classes and run static analysis/security checks o
 - Security scanning via Bandit and Safety
 - Code quality analysis via Radon (Maintainability Index)
 
+The results should be printed directly in the termininal or on a HTML file, if the user prefers.
+
 ## Tools
 
 - **God Class detection (AST + Lizard):**  
