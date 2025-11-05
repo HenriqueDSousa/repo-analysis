@@ -189,17 +189,20 @@ def generate_html_report(results: list, params: dict, img_b64: str) -> str:
 def static(repo: str,
            output: str = None):
     """
-    Detecta God Classes e executa análises estáticas adicionais.
+    Mi static analysis
     """
     temp_dir = None
     repo_path = repo
-
     if output:
-        typer.echo = lambda msg: print(msg, file=open(output, "a", encoding="utf-8"))
+        # Printing to file if output is specified
+        def _file_echo(msg):
+            with open(output, "a", encoding="utf-8") as fh:
+                print(msg, file=fh)
+        typer.echo = _file_echo
 
     # Clone if GitHub link
     if repo.startswith("http://") or repo.startswith("https://"):
-        typer.echo(f"📥 Clonando repositório {repo} ...")
+        typer.echo(f"📥 Cloning repository {repo} ...")
         temp_dir = tempfile.mkdtemp()
         repo_path = os.path.join(temp_dir, "repo")
         Repo.clone_from(repo, repo_path)
@@ -208,8 +211,6 @@ def static(repo: str,
     radon_report = run_radon(repo_path)
     for file, score in radon_report.items():
         radon_rating = classify_radon_rating(score)
-        if radon_rating == 'A':
-            continue 
         rel_path = os.path.relpath(file, repo_path)
 
         typer.echo(f"- {rel_path}: {round(score['mi'], 2)}, {radon_rating}")
@@ -221,112 +222,95 @@ def static(repo: str,
 @app.command()
 def history(repo: str,
             max_commits: int = 50,
-            skip: int = 1,
             branch: str = 'HEAD',
             output: str = None):
     """
     Create a historic analysis of MI (Maintainability Index) over repository commits.
-
-    - repo: local path or git URL
-    - max_commits: how many recent commits to sample (newest commits)
-    - skip: sample every Nth commit (1 = every commit)
-    - branch: branch or ref to walk (defaults to HEAD)
-    - output: optional output JSON path; prints to stdout if not provided
     """
     temp_dir = None
     repo_path = repo
-    # Clone if remote
-    if repo.startswith("http://") or repo.startswith("https://"):
+
+    # Clone remote repo if needed
+    if repo.startswith(("http://", "https://")):
         typer.echo(f"📥 Clonando repositório {repo} ...")
         temp_dir = tempfile.mkdtemp()
         repo_path = os.path.join(temp_dir, "repo")
         Repo.clone_from(repo, repo_path)
 
-    repo_obj = Repo(repo_path)
-
-    typer.echo(f"Gathering up to {max_commits} commits from {branch} ...")
     try:
-        # Get all commits first
-        all_commits = list(repo_obj.iter_commits(branch))
-        total_commits = len(all_commits)
-        
-        # Calculate step size to get evenly spaced commits
-        step = max(1, total_commits // max_commits)
-        
-        # Select evenly spaced commits
-        commits = all_commits[::step][:max_commits]
-        
+        repo_obj = Repo(repo_path)
     except Exception as e:
-        typer.echo(f"Error fetching commits: {e}")
         if temp_dir:
             shutil.rmtree(temp_dir)
+        typer.echo(f"Erro ao abrir repositório: {e}")
         raise typer.Exit(code=1)
 
-    # Walk oldest -> newest for time series
-    commits.reverse()
-
-    # Save current HEAD to restore later
+    # Gather commits
     try:
-        current_ref = repo_obj.head.commit.hexsha
-    except Exception:
-        current_ref = None
+        all_commits = list(repo_obj.iter_commits(branch))
+    except Exception as e:
+        if temp_dir:
+            shutil.rmtree(temp_dir)
+        typer.echo(f"Error fetching commits: {e}")
+        raise typer.Exit(code=1)
+
+    total_commits = len(all_commits)
+    if total_commits == 0:
+        if temp_dir:
+            shutil.rmtree(temp_dir)
+        typer.echo("No commits found.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Gathering up to {max_commits} commits from {branch} ...")
+
+    # Sample commits evenly (then reverse to analyze older -> newer)
+    step = max(1, total_commits // max_commits)
+    sampled = all_commits[::step][:max_commits]
+    sampled.reverse()
 
     results = []
-    for idx, commit in enumerate(commits):
-        if (idx % skip) != 0:
-            continue
+    for idx, commit in enumerate(sampled):
         sha = commit.hexsha
         date = commit.committed_datetime.isoformat()
         typer.echo(f"- Analyzing commit {sha} @ {date}")
-
-        # checkout commit
         try:
             repo_obj.git.checkout(sha)
         except Exception as e:
             typer.echo(f"  Error checking out {sha}: {e}")
             continue
 
-        # run radon
         radon_report = run_radon(repo_path)
         avg_mi = compute_average_mi(radon_report)
-        entry = {
+        results.append({
             'sha': sha,
             'date': date,
             'avg_mi': None if avg_mi is None else round(avg_mi, 2),
             'files': len(radon_report or {}),
-        }
-        results.append(entry)
+        })
 
-    # restore previous HEAD
-    if current_ref:
-        try:
-            repo_obj.git.checkout(current_ref)
-        except Exception:
-            # if it fails, ignore
-            pass
-
-    # output: if output provided, create a single HTML report (plot embedded + metadata)
-    if output:
-        try:
-            # render plot to bytes and base64-encode
-            img_bytes = render_mi_plot_bytes(results)
-            img_b64 = base64.b64encode(img_bytes).decode('ascii')
+    # Output: HTML report with embedded plot or JSON to stdout
+    try:
+        if output:
+            img_b64 = ""
+            if results:
+                img_bytes = render_mi_plot_bytes(results)
+                img_b64 = base64.b64encode(img_bytes).decode('ascii')
 
             params = {
                 'repo': repo,
                 'branch': branch,
                 'max_commits': max_commits,
-                'skip': skip,
                 'collected_points': len(results),
             }
             html = generate_html_report(results, params, img_b64)
             with open(output, 'w', encoding='utf-8') as fh:
                 fh.write(html)
             typer.echo(f"Historic MI report written to {output}")
-        except Exception as e:
-            typer.echo(f"Error creating HTML report {output}: {e}")
-    else:
-        typer.echo(json.dumps(results, indent=2, ensure_ascii=False))
-
-    if temp_dir:
-        shutil.rmtree(temp_dir)
+        else:
+            typer.echo(json.dumps(results, indent=2, ensure_ascii=False))
+    except Exception as e:
+        typer.echo(f"Error creating report: {e}")
+        raise typer.Exit(code=1)
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir)
