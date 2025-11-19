@@ -50,6 +50,20 @@ Or print the JSON time series to stdout:
 mi-analysis history https://github.com/pallets/flask.git --max-commits 30
 ```
 
+### The HTML result has 3 parts:
+
+**Metadata:** Describes the execution parameters that generated the present report
+
+![alt text](example/metadata_example.png)
+
+**Timeseries:** A plot of a timeseries ilustrating the evolution of the MI value of the repository varying on time/commits. The 
+
+![alt text](example/timeseries_example.png)
+
+**JSON Report:** Essentialy, represents the same data that the time series plot, but with additional information, such as exact date and time, number of files, the commit `SHA` and the average MI.
+
+![alt text](example/json_example.png)
+
 Notes and requirements
 
 - The `history` command is the one that generates an HTML report when `--output` is given. The `static` command writes plain text to `--output` if provided.
